@@ -1,0 +1,28 @@
+name: Kufar & Vinted Sniper
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Скачиваем код
+        uses: actions/checkout@v4
+
+      - name: Настраиваем Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Устанавливаем библиотеки
+        run: pip install -r requirements.txt
+
+      - name: Запускаем парсер
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python github_runner.py
