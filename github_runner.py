@@ -54,10 +54,13 @@ async def fetch_kufar_items(session: AsyncSession, browser_url: str) -> list[dic
         if match:
             next_data = json.loads(match.group(1))
             listing = next_data.get("props", {}).get("initialState", {}).get("listing", {})
-            ads = listing.get("ads", [])
+            if isinstance(listing, dict):
+                ads = listing.get("ads", [])
 
         results = []
         for ad in ads:
+            if not isinstance(ad, dict):
+                continue
             ad_id = str(ad.get("ad_id"))
             title = ad.get("subject", "Без названия")
             link = ad.get("ad_link", f"https://kufar.by{ad_id}")
@@ -68,16 +71,18 @@ async def fetch_kufar_items(session: AsyncSession, browser_url: str) -> list[dic
                 price_str = "Не указана"
 
             extra_param = ""
-            for param in ad.get("ad_parameters", []):
-                if param.get("p") in ("size", "clothing_size", "shoes_size", "mobile_phone_memory", "condition"):
-                    val = param.get("vl")
-                    if val:
-                        extra_param = str(val)
-                        break
+            ad_params = ad.get("ad_parameters", [])
+            if isinstance(ad_params, list):
+                for param in ad_params:
+                    if isinstance(param, dict) and param.get("p") in ("size", "clothing_size", "shoes_size", "mobile_phone_memory", "condition"):
+                        val = param.get("vl")
+                        if val:
+                            extra_param = str(val)
+                            break
 
             images = ad.get("images", [])
             photo_url = None
-            if images and isinstance(images, list) and len(images) > 0:
+            if isinstance(images, list) and len(images) > 0 and isinstance(images, dict):
                 img_path = images.get("path")
                 if img_path:
                     photo_url = f"https://kufar.by{img_path}"
