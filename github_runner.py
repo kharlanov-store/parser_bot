@@ -1,16 +1,18 @@
 import asyncio
+import json
 import logging
 import os
 import random
+import re
 from urllib.parse import urlparse, parse_qs, urlencode
 
 from aiogram import Bot
 from curl_cffi.requests import AsyncSession
 from supabase import create_client, Client
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+BOT_TOKEN = "".join((os.getenv("BOT_TOKEN") or "").split())
+SUPABASE_URL = "".join((os.getenv("SUPABASE_URL") or "").split())
+SUPABASE_KEY = "".join((os.getenv("SUPABASE_KEY") or "").split())
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -23,8 +25,8 @@ def build_kufar_api_url(browser_url: str) -> str:
     params = parse_qs(parsed.query)
     api_params = {"lang": "ru", "size": "15", "sort": "lst.d"}
     for k, v in params.items():
-        if k not in ("sort", "size", "cursor"):
-            api_params[k] = v[0] if len(v) == 1 else ",".join(v)
+        if k not in ("sort", "size", "cursor", "r_recognize_suggester", "utm_suggestionType"):
+            api_params[k] = v if len(v) == 1 else ",".join(v)
     return f"https://kufar.by?{urlencode(api_params)}"
 
 
@@ -51,17 +53,38 @@ def build_vinted_api_url(browser_url: str) -> str:
 
 async def fetch_kufar_items(session: AsyncSession, browser_url: str) -> list[dict]:
     api_url = build_kufar_api_url(browser_url)
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://kufar.by",
+        "Referer": "https://kufar.by/",
+    }
     try:
-        resp = await session.get(api_url, timeout=15)
-        if resp.status_code != 200:
-            logging.warning(f"Kufar HTTP {resp.status_code}")
+        resp = await session.get(api_url, headers=headers, timeout=15)
+        ads = []
+        if resp.status_code == 200 and resp.text.strip():
+            ads = resp.json().get("ads", [])
+        else:
+            # Резервный способ: парсим __NEXT_DATA__ прямо со страницы браузера
+            html_resp = await session.get(browser_url, timeout=15)
+            match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html_resp.text)
+            if match:
+                next_data = json.loads(match.group(1))
+                ads = (
+                    next_data.get("props", {})
+                    .get("initialState", {})
+                    .get("listing", {})
+                    .get("ads", [])
+                )
+
+        if not ads:
+            logging.warning(f"Kufar пустой ответ (status={resp.status_code}) для {browser_url}")
             return []
-        ads = resp.json().get("ads", [])
+
         results = []
         for ad in ads:
             ad_id = str(ad.get("ad_id"))
             title = ad.get("subject", "Без названия")
-            link = ad.get("ad_link", f"https://kufar.by{ad_id}")
+            link = ad.get("ad_link", f"https://kufar.by/item/{ad_id}")
             price_byn = ad.get("price_byn", "0")
             try:
                 price_str = f"{int(price_byn) / 100:.2f} BYN" if int(price_byn) > 0 else "Договорная"
@@ -75,7 +98,7 @@ async def fetch_kufar_items(session: AsyncSession, browser_url: str) -> list[dic
                     break
 
             images = ad.get("images", [])
-            photo_url = f"https://kufar.by{images[0]['path']}" if images and images[0].get("path") else None
+            photo_url = f"https://kufar.by{images['path']}" if images and images.get("path") else None
 
             results.append({
                 "id": ad_id, "title": title, "price": price_str,
@@ -101,7 +124,7 @@ async def fetch_vinted_items(session: AsyncSession, browser_url: str) -> list[di
             await asyncio.sleep(1.5)
             resp = await session.get(api_url, headers=headers, timeout=15)
 
-        if resp.status_code != 200:
+        if resp.status_code != 200 or not resp.text.strip():
             logging.warning(f"Vinted HTTP {resp.status_code}")
             return []
 
@@ -153,10 +176,10 @@ async def run_once():
                 new_items.append(item)
 
             if last_id is None and new_items:
-                new_items = [new_items[0]]
+                new_items = [new_items]
 
             if new_items:
-                newest_id = new_items[0]["id"]
+                newest_id = new_items["id"]
                 supabase.table("parser_links").update({"last_item_id": newest_id}).eq("id", link["id"]).execute()
 
                 for item in reversed(new_items):
@@ -183,3 +206,4 @@ async def run_once():
 
 if __name__ == "__main__":
     asyncio.run(run_once())
+
