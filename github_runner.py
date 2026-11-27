@@ -2,11 +2,11 @@ import asyncio
 import json
 import logging
 import os
-import random
 import re
 from urllib.parse import urlparse, parse_qs, urlencode
 
 from aiogram import Bot
+from aiogram.types import BufferedInputFile
 from curl_cffi.requests import AsyncSession
 from supabase import create_client, Client
 
@@ -98,20 +98,17 @@ async def run_once():
 
     async with AsyncSession(impersonate="chrome124") as session:
         for link in links:
-            logging.info(f"Проверяю ссылку id={link['id']}, user_id={link['user_id']}, last_id={link['last_item_id']}")
             items = await fetch_kufar_items(session, link["original_url"])
             logging.info(f"Найдено лотов: {len(items)}")
             if not items:
                 continue
 
-            new_items = []
-            for item in items:
-                if item["id"] == link["last_item_id"]:
-                    break
-                new_items.append(item)
+            seen_ids = set((link["last_item_id"] or "").split(",")) if link["last_item_id"] else set()
 
-            if link["last_item_id"] is None and new_items:
-                new_items = [new_items[0]]
+            if not seen_ids:
+                new_items = [items[0]]
+            else:
+                new_items = [it for it in items if it["id"] not in seen_ids]
 
             logging.info(f"Новых лотов к отправке: {len(new_items)}")
             if new_items:
@@ -123,16 +120,29 @@ async def run_once():
                         f"📏 Размер: {item['size']}\n"
                         f"🔗 {item['url']}"
                     )
-                    try:
-                        if item["photo"]:
-                            await bot.send_photo(chat_id=link["user_id"], photo=item["photo"], caption=caption)
-                        else:
-                            await bot.send_message(chat_id=link["user_id"], text=caption)
-                        logging.info(f"✅ Успешно отправлено в chat_id={link['user_id']}!")
-                    except Exception as e:
-                        logging.error(f"❌ Ошибка отправки в chat_id={link['user_id']}: {e}")
+                    sent = False
+                    if item["photo"]:
+                        try:
+                            img_resp = await session.get(item["photo"], timeout=10)
+                            if img_resp.status_code == 200 and len(img_resp.content) > 1000:
+                                photo_file = BufferedInputFile(img_resp.content, filename="lot.jpg")
+                                await bot.send_photo(chat_id=link["user_id"], photo=photo_file, caption=caption)
+                                sent = True
+                        except Exception as img_err:
+                            logging.warning(f"Фото не скачалось ({img_err}), шлю текстом...")
 
-                supabase.table("parser_links").update({"last_item_id": new_items[0]["id"]}).eq("id", link["id"]).execute()
+                    if not sent:
+                        try:
+                            await bot.send_message(chat_id=link["user_id"], text=caption)
+                            sent = True
+                        except Exception as e:
+                            logging.error(f"❌ Ошибка отправки текста в chat_id={link['user_id']}: {e}")
+
+                    if sent:
+                        logging.info(f"✅ Успешно отправлено в chat_id={link['user_id']}!")
+
+                latest_ids_str = ",".join(it["id"] for it in items[:15])
+                supabase.table("parser_links").update({"last_item_id": latest_ids_str}).eq("id", link["id"]).execute()
 
     await bot.session.close()
 
