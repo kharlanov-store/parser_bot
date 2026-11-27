@@ -82,10 +82,11 @@ async def fetch_kufar_items(session: AsyncSession, browser_url: str) -> list[dic
 
             images = ad.get("images", [])
             photo_url = None
-            if isinstance(images, list) and len(images) > 0 and isinstance(images, dict):
-                img_path = images.get("path")
-                if img_path:
-                    photo_url = f"https://kufar.by{img_path}"
+            if isinstance(images, list):
+                for img in images:
+                    if isinstance(img, dict) and img.get("path"):
+                        photo_url = f"https://kufar.by{img.get('path')}"
+                        break
 
             results.append({
                 "id": ad_id,
@@ -155,7 +156,7 @@ async def run_once():
             seen_ids = set((link["last_item_id"] or "").split(",")) if link["last_item_id"] else set()
 
             if not seen_ids:
-                new_items = [items]
+                new_items = items[:1]
             else:
                 new_items = [it for it in items if it["id"] not in seen_ids]
 
