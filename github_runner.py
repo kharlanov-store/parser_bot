@@ -47,49 +47,14 @@ async def fetch_kufar_items(session: AsyncSession, browser_url: str) -> list[dic
         "Accept-Language": "ru-RU,ru;q=0.9",
     }
     try:
-        # 1. Загружаем саму страницу по браузерной ссылке — Куфар сам применяет категорию, регион и все фильтры из URL
         html_resp = await session.get(browser_url, headers=web_headers, timeout=15)
         ads = []
-        cat_id = None
-        rgn_id = None
 
         match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html_resp.text)
         if match:
             next_data = json.loads(match.group(1))
             listing = next_data.get("props", {}).get("initialState", {}).get("listing", {})
             ads = listing.get("ads", [])
-            # Извлекаем точный ID категории и региона, которые определил сам Куфар
-            filters = listing.get("filters", {})
-            cat_id = filters.get("cat")
-            rgn_id = filters.get("rgn")
-
-        # 2. Если со страницы вытащили cat/rgn, дополнительно запрашиваем свежайший JSON через мобильное API
-        if not ads or cat_id:
-            parsed = urlparse(browser_url)
-            params = parse_qs(parsed.query)
-            api_params = {"lang": "ru", "size": "15", "sort": "lst.d"}
-            if cat_id:
-                api_params["cat"] = str(cat_id)
-            if rgn_id:
-                api_params["rgn"] = str(rgn_id)
-            for k, v in params.items():
-                if k not in ("sort", "size", "cursor", "r_recognize_suggester", "utm_suggestionType"):
-                    api_params[k] = v if len(v) == 1 else ",".join(v)
-
-            api_url = f"https://kufar.by?{urlencode(api_params)}"
-            mobile_headers = {
-                "User-Agent": "okhttp/4.11.0",
-                "Accept": "application/json",
-                "Accept-Language": "ru-RU,ru;q=0.9",
-                "X-App-Name": "Kufar",
-                "X-Platform": "android",
-            }
-            async with AsyncSession() as mobile_session:
-                resp = await mobile_session.get(api_url, headers=mobile_headers, timeout=15)
-            if resp.status_code == 200 and resp.text.strip().startswith("{"):
-                api_ads = resp.json().get("ads", [])
-                if api_ads:
-                    ads = api_ads
 
         results = []
         for ad in ads:
@@ -102,7 +67,6 @@ async def fetch_kufar_items(session: AsyncSession, browser_url: str) -> list[dic
             except ValueError:
                 price_str = "Не указана"
 
-            # Извлекаем ключевой параметр (размер для одежды или память/состояние для телефонов)
             extra_param = ""
             for param in ad.get("ad_parameters", []):
                 if param.get("p") in ("size", "clothing_size", "shoes_size", "mobile_phone_memory", "condition"):
