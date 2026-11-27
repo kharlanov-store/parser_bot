@@ -53,19 +53,32 @@ def build_vinted_api_url(browser_url: str) -> str:
 
 async def fetch_kufar_items(session: AsyncSession, browser_url: str) -> list[dict]:
     api_url = build_kufar_api_url(browser_url)
-    headers = {
-        "Accept": "application/json, text/plain, */*",
-        "Origin": "https://kufar.by",
-        "Referer": "https://kufar.by/",
+    # Заголовки мобильного клиента Kufar Android
+    mobile_headers = {
+        "User-Agent": "okhttp/4.11.0",
+        "Accept": "application/json",
+        "Accept-Language": "ru-RU,ru;q=0.9",
+        "X-App-Name": "Kufar",
+        "X-Platform": "android",
     }
     try:
-        resp = await session.get(api_url, headers=headers, timeout=15)
+        # Делаем запрос без TLS-имперсонации браузера, чтобы имитировать чистый okhttp Android
+        async with AsyncSession() as mobile_session:
+            resp = await mobile_session.get(api_url, headers=mobile_headers, timeout=15)
+
+        logging.info(f"Kufar API status={resp.status_code}, len={len(resp.text)}")
         ads = []
-        if resp.status_code == 200 and resp.text.strip():
+
+        if resp.status_code == 200 and resp.text.strip().startswith("{"):
             ads = resp.json().get("ads", [])
         else:
-            # Резервный способ: парсим __NEXT_DATA__ прямо со страницы браузера
-            html_resp = await session.get(browser_url, timeout=15)
+            # Резервный парсинг веб-страницы с мобильным User-Agent
+            web_headers = {
+                "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+                "Accept-Language": "ru-RU,ru;q=0.9",
+            }
+            html_resp = await session.get(browser_url, headers=web_headers, timeout=15)
+            logging.info(f"Kufar HTML status={html_resp.status_code}, len={len(html_resp.text)}")
             match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html_resp.text)
             if match:
                 next_data = json.loads(match.group(1))
@@ -77,14 +90,14 @@ async def fetch_kufar_items(session: AsyncSession, browser_url: str) -> list[dic
                 )
 
         if not ads:
-            logging.warning(f"Kufar пустой ответ (status={resp.status_code}) для {browser_url}")
+            logging.warning("Kufar не вернул объявлений (IP заблокирован антиботом).")
             return []
 
         results = []
         for ad in ads:
             ad_id = str(ad.get("ad_id"))
             title = ad.get("subject", "Без названия")
-            link = ad.get("ad_link", f"https://kufar.by/item/{ad_id}")
+            link = ad.get("ad_link", f"https://kufar.by{ad_id}")
             price_byn = ad.get("price_byn", "0")
             try:
                 price_str = f"{int(price_byn) / 100:.2f} BYN" if int(price_byn) > 0 else "Договорная"
@@ -98,7 +111,11 @@ async def fetch_kufar_items(session: AsyncSession, browser_url: str) -> list[dic
                     break
 
             images = ad.get("images", [])
-            photo_url = f"https://kufar.by{images['path']}" if images and images.get("path") else None
+            photo_url = None
+            if images and isinstance(images, list) and len(images) > 0:
+                img_path = images[0].get("path")
+                if img_path:
+                    photo_url = f"https://kufar.by{img_path}"
 
             results.append({
                 "id": ad_id, "title": title, "price": price_str,
@@ -124,8 +141,8 @@ async def fetch_vinted_items(session: AsyncSession, browser_url: str) -> list[di
             await asyncio.sleep(1.5)
             resp = await session.get(api_url, headers=headers, timeout=15)
 
-        if resp.status_code != 200 or not resp.text.strip():
-            logging.warning(f"Vinted HTTP {resp.status_code}")
+        logging.info(f"Vinted API status={resp.status_code}, len={len(resp.text)}")
+        if resp.status_code != 200 or not resp.text.strip().startswith("{"):
             return []
 
         items = resp.json().get("items", [])
@@ -166,6 +183,7 @@ async def run_once():
             last_id = link["last_item_id"]
 
             items = await (fetch_kufar_items(session, url) if platform == "kufar" else fetch_vinted_items(session, url))
+            logging.info(f"Получено лотов для '{link['title']}': {len(items)}")
             if not items:
                 continue
 
@@ -176,10 +194,10 @@ async def run_once():
                 new_items.append(item)
 
             if last_id is None and new_items:
-                new_items = [new_items]
+                new_items = [new_items[0]]
 
             if new_items:
-                newest_id = new_items["id"]
+                newest_id = new_items[0]["id"]
                 supabase.table("parser_links").update({"last_item_id": newest_id}).eq("id", link["id"]).execute()
 
                 for item in reversed(new_items):
@@ -206,4 +224,3 @@ async def run_once():
 
 if __name__ == "__main__":
     asyncio.run(run_once())
-
